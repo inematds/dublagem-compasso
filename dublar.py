@@ -46,12 +46,22 @@ def norm(w):
     return re.sub(r"[^\wà-üÀ-Ü]", "", w.lower())
 
 
-def trim_sil(x, thr=0.02):
+def trim_sil(x, thr_ini=0.02, thr_fim=0.05):
+    """Corta silêncio das pontas. O fim usa limiar mais alto (thr_fim) porque o
+    chatterbox costuma deixar um rabinho de respiração/quase-silêncio que infla
+    a duração — a fala 'termina' antes do arquivo, e o fim da janela fica mudo."""
     e = np.abs(x)
-    idx = np.where(e > thr * e.max())[0]
-    if len(idx) == 0:
+    # suaviza em janelas de 20ms pra não cortar em vales entre fonemas
+    k = 480
+    n = len(e) // k
+    env = e[:n * k].reshape(n, k).mean(axis=1)
+    ini_idx = np.where(env > thr_ini * env.max())[0]
+    fim_idx = np.where(env > thr_fim * env.max())[0]
+    if len(ini_idx) == 0 or len(fim_idx) == 0:
         return x
-    return x[max(0, idx[0] - 240):idx[-1] + 480]
+    a = max(0, ini_idx[0] * k - 240)
+    b = min(len(x), (fim_idx[-1] + 1) * k + 480)
+    return x[a:b]
 
 
 def transcrever(wav, lang):
@@ -173,8 +183,10 @@ def main():
             dur = len(x) / SR
             tempo = dur / wdur
             tail = np.abs(x[-int(0.5 * SR):]).mean()
+            # tomada com cauda muda é REJEITADA (pen alto), não só penalizada:
+            # é ela que produz "boca aberta sem som" no fim da janela.
             pen = abs(tempo - 1.0) + (0 if 0.80 <= tempo <= 1.30 else 10) \
-                + (0.5 if tail < 0.01 else 0)
+                + (10 if tail < 0.008 else 0)
             cands.append((pen, x, dur))
             print(f"  bloco {bi} take{t + 1}: {dur:.2f}s (janela {wdur:.2f}s, tempo {tempo:.2f})")
             if pen < 0.12:
